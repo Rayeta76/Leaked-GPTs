@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reductor de velocidad en radios ISO</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --ink:#1b1f24; --mute:#5d6672; --line:#d9dde3; --accent:#1d4ed8; --warn:#b45309; --ok:#15803d; --slow:#d62828; --fast:#1d4ed8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171b; --card:#1d2227; --ink:#e8ebef; --mute:#9aa4b0; --line:#323a43; --accent:#6d9bff; --warn:#f0a35a; --ok:#58c47f; --slow:#ff6b6b; --fast:#6d9bff; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, "Segoe UI", sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 2px; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  p.sub { margin:0 0 14px; color:var(--mute); }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
+  textarea { width:100%; min-height:150px; font:12.5px/1.35 Consolas, "Courier New", monospace; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:8px; resize:vertical; }
+  input[type=number], input[type=text] { width:90px; padding:4px 6px; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:5px; font:inherit; }
+  button, label.btn { display:inline-block; padding:7px 14px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); }
+  button:disabled { opacity:.45; cursor:default; }
+  .row { display:flex; flex-wrap:wrap; gap:14px; align-items:center; margin:8px 0; }
+  .row label { display:flex; gap:6px; align-items:center; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { font-size:12px; color:var(--mute); font-weight:600; }
+  .tag { font-size:12px; padding:1px 7px; border-radius:10px; border:1px solid var(--line); }
+  .tag.ext { color:var(--ok); border-color:var(--ok); }
+  .tag.int { color:var(--mute); }
+  .tag.unk { color:var(--warn); border-color:var(--warn); }
+  .warn { color:var(--warn); margin:4px 0; }
+  .stats { color:var(--mute); margin:8px 0; }
+  .stats b { color:var(--ink); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:760px) { .grid2 { grid-template-columns:1fr; } }
+  canvas { width:100%; aspect-ratio:1/1; background:var(--bg); border:1px solid var(--line); border-radius:6px; }
+  .legend { font-size:12px; color:var(--mute); }
+  .legend i { display:inline-block; width:18px; height:3px; vertical-align:middle; margin:0 4px 0 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Reductor de velocidad en radios externos</h1>
+  <p class="sub">Carga un programa ISO (.cni), elige la velocidad por cada radio externo y descarga el ISO modificado. Todo se ejecuta en este navegador; no se sube nada.</p>
+
+  <section>
+    <h2>1. Programa ISO</h2>
+    <div class="row">
+      <label class="btn">Abrir archivo<input id="file" type="file" hidden></label>
+      <span id="fname" class="legend">o pega el texto abajo</span>
+    </div>
+    <textarea id="src" spellcheck="false" placeholder="Pega aquí el programa ISO..."></textarea>
+  </section>
+
+  <section id="cfg" hidden>
+    <h2>2. Radios encontrados y velocidad</h2>
+    <div class="row">
+      <label>Velocidad por defecto (mm/min) <input id="gfeed" type="number" min="1" value="500"></label>
+      <label>Tramo recto antes/después del radio (mm) <input id="glead" type="number" min="0" step="0.5" value="2"></label>
+      <label>Preseleccionar externos con R ≤ <input id="gmaxr" type="number" min="0" step="1" value="30"> mm</label>
+      <button class="ghost" id="applyAll">Aplicar a todos</button>
+    </div>
+    <table>
+      <thead><tr><th></th><th>Tipo</th><th>Radio</th><th>Arcos</th><th>F actual</th><th>Velocidad nueva</th><th>Tramo recto</th></tr></thead>
+      <tbody id="groups"></tbody>
+    </table>
+    <div id="warns"></div>
+    <div class="row">
+      <label><input id="renum" type="checkbox" checked> Renumerar bloques N</label>
+      <label>Fin de línea
+        <select id="eol"><option value="">igual que el original</option><option value="\r\n">Windows (CRLF)</option><option value="\n">Unix (LF)</option></select>
+      </label>
+    </div>
+  </section>
+
+  <section id="res" hidden>
+    <h2>3. Resultado</h2>
+    <div class="stats" id="stats"></div>
+    <div class="row">
+      <button id="dl">Descargar ISO modificado</button>
+      <button class="ghost" id="copy">Copiar texto</button>
+    </div>
+    <textarea id="out" readonly spellcheck="false"></textarea>
+    <div class="legend" style="margin:10px 0 6px">Recorrido coloreado por velocidad <i style="background:var(--fast)"></i>rápido<i style="background:var(--slow)"></i>reducido</div>
+    <div class="grid2">
+      <div><div class="legend">Original</div><canvas id="c0" width="520" height="520"></canvas></div>
+      <div><div class="legend">Modificado</div><canvas id="c1" width="520" height="520"></canvas></div>
+    </div>
+  </section>
+</main>
+
+<script id="core">
+const Core = (() => {
+  const TAU = Math.PI * 2;
+  const num = s => (s !== undefined && /^[-+]?\d+(\.\d+)?$/.test(s)) ? parseFloat(s) : null;
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const same = (a, b) => dist(a, b) < 1e-3;
+
+  function parseBlock(raw) {
+    const m = /^(\s*)(N(\d+))?\s*(.*)$/i.exec(raw);
+    const b = { raw, hasN: !!m[2], n: m[3] ? parseInt(m[3], 10) : null, words: [], gs: [],
+                gcode: false, isMove: false, prevMove: -1, nextMove: -1 };
+    const body = m[4];
+    if (!/^(G\d|[XYZ]\s*=?\s*[-+\d.])/i.test(body)) return b;
+    b.gcode = true;
+    for (const tok of body.split(/\s+/)) {
+      const t = /^([A-Za-z]+)(=?)(.*)$/.exec(tok);
+      if (t) b.words.push({ l: t[1].toUpperCase(), eq: t[2], v: t[3] });
+    }
+    return b;
+  }
+
+  // Los centros I/J pueden ser absolutos o incrementales: se elige la interpretación con radio coherente.
+  function arcGeom(b) {
+    const I = b.W.I && num(b.W.I.v), J = b.W.J && num(b.W.J.v);
+    if (!b.known || !b.xy || I == null || J == null) return null;
+    const s = b.start, e = b.end;
+    const cands = [{ x: I, y: J, abs: true }, { x: s.x + I, y: s.y + J, abs: false }];
+    const err = c => Math.abs(dist(s, c) - dist(e, c));
+    const c = err(cands[0]) <= err(cands[1]) ? cands[0] : cands[1];
+    if (err(c) > 0.01) return null;
+    const dir = b.kind === 'ccw' ? 1 : -1;
+    const a0 = Math.atan2(s.y - c.y, s.x - c.x), a1 = Math.atan2(e.y - c.y, e.x - c.x);
+    let d = dir > 0 ? a1 - a0 : a0 - a1;
+    while (d <= 1e-9) d += TAU;
+    const r = (dist(s, c) + dist(e, c)) / 2;
+    return { c, r, a0, dir, sweep: d, len: r * d };
+  }
+
+  const arcPoint = (g, t) => ({ x: g.c.x + g.r * Math.cos(g.a0 + g.dir * g.sweep * t), y: g.c.y + g.r * Math.sin(g.a0 + g.dir * g.sweep * t) });
+
+  function samplePoints(b) {
+    if (b.arc) { const p = []; for (let k = 1; k <= 16; k++) p.push(arcPoint(b.arc, k / 16)); return p; }
+    return [b.end];
+  }
+
+  // Sin compensación activa: usa el sentido de giro del contorno cerrado que contiene el arco.
+  function runArea(B, i) {
+    const ok = k => B[k].isMove && B[k].known && B[k].xy && !B[k].z && B[k].kind !== 'rapid' && (B[k].kind === 'line' || B[k].arc);
+    let a = i;
+    while (B[a].prevMove >= 0 && ok(B[a].prevMove) && same(B[B[a].prevMove].end, B[a].start)) a = B[a].prevMove;
+    const pts = [B[a].start];
+    let k = a;
+    while (k >= 0 && ok(k)) {
+      pts.push(...samplePoints(B[k]));
+      const n = B[k].nextMove;
+      if (n < 0 || !ok(n) || !same(B[k].end, B[n].start)) break;
+      k = n;
+    }
+    if (!same(pts[0], pts[pts.length - 1])) return null;
+    let area = 0;
+    for (let p = 0; p < pts.length - 1; p++) area += pts[p].x * pts[p + 1].y - pts[p + 1].x * pts[p].y;
+    return area;
+  }
+
+  function analyze(text) {
+    const eol = text.includes('\r\n') ? '\r\n' : text.includes('\n') ? '\n' : text.includes('\r') ? '\r' : '\r\n';
+    const lines = text.split(/\r\n|\n|\r/);
+    let trailing = false;
+    if (lines.length > 1 && lines[lines.length - 1] === '') { lines.pop(); trailing = true; }
+    const B = lines.map(parseBlock);
+    let x = null, y = null, g = null, comp = 40, F = null, last = -1, parametric = 0, dec = 5, decSet = false;
+    B.forEach((b, i) => {
+      b.i = i;
+      if (!b.gcode) { b.feedAfter = F; return; }
+      const W = {};
+      for (const w of b.words) {
+        if (w.l === 'G') {
+          if (!/^\d+$/.test(w.v)) continue;
+          const gv = +w.v; b.gs.push(gv);
+          if (gv <= 3) g = gv; else if (gv >= 40 && gv <= 42) comp = gv;
+        } else if (!W[w.l]) W[w.l] = w;
+      }
+      if (W.F) F = W.F.v;
+      b.W = W; b.g = g; b.compAt = comp; b.feedAfter = F;
+      b.compWord = b.gs.some(v => v >= 40 && v <= 42);
+      b.isMove = g !== null && g <= 3 && !!(W.X || W.Y || W.Z);
+      if (!b.isMove) return;
+      b.start = { x, y };
+      if (W.X) { x = num(W.X.v); if (x === null) parametric++; else if (!decSet) { dec = (W.X.v.split('.')[1] || '').length; decSet = true; } }
+      if (W.Y) { y = num(W.Y.v); if (y === null) parametric++; }
+      b.end = { x, y };
+      b.known = [b.start.x, b.start.y, x, y].every(v => v !== null);
+      b.xy = !!(W.X || W.Y); b.z = !!W.Z;
+      b.kind = ['rapid', 'line', 'cw', 'ccw'][g];
+      b.prevMove = last;
+      if (last >= 0) B[last].nextMove = i;
+      last = i;
+      if (b.kind === 'cw' || b.kind === 'ccw') b.arc = arcGeom(b);
+    });
+
+    const arcs = [];
+    let badArcs = 0;
+    for (const b of B) {
+      if (!b.isMove || (b.kind !== 'cw' && b.kind !== 'ccw') || !b.xy) continue;
+      if (!b.arc) { badArcs++; continue; }
+      let type = 'desconocido', byShape = false;
+      if (b.compAt === 42) type = b.kind === 'ccw' ? 'externo' : 'interno';
+      else if (b.compAt === 41) type = b.kind === 'cw' ? 'externo' : 'interno';
+      else {
+        const area = runArea(B, b.i);
+        if (area !== null && Math.abs(area) > 1e-6) { byShape = true; type = ((area > 0) === (b.kind === 'ccw')) ? 'externo' : 'interno'; }
+      }
+      arcs.push({ i: b.i, line: b.i + 1, kind: b.kind, r: b.arc.r, len: b.arc.len, type, byShape, feed: b.feedAfter });
+    }
+    return { eol, trailing, blocks: B, arcs, dec, warnings: { parametric, badArcs } };
+  }
+
+  function groupArcs(an) {
+    const map = new Map();
+    for (const a of an.arcs) {
+      const key = a.type + '|' + a.r.toFixed(3);
+      if (!map.has(key)) map.set(key, { key, type: a.type, r: a.r, arcs: [], feeds: new Set() });
+      const gr = map.get(key); gr.arcs.push(a); if (a.feed != null) gr.feeds.add(a.feed);
+    }
+    return [...map.values()].sort((p, q) => (p.type === q.type ? p.r - q.r : p.type === 'externo' ? -1 : 1));
+  }
+
+  const fmt = (v, dec) => { const s = v.toFixed(dec); return /^-0\.0*$/.test(s) ? s.slice(1) : s; };
+  const setWord = (raw, L, value) => raw.replace(new RegExp('(^|\\s)' + L + '(=?)\\s*[^\\s]+', 'i'), (m, a, e) => a + L + e + value);
+  const eqStyle = b => { const w = b.words.find(w => 'XYIJF'.includes(w.l)); return w ? w.eq : '='; };
+
+  function setFeed(b, raw, feed, curF) {
+    if (b.W.F) return setWord(raw, 'F', feed);
+    if (feed !== curF) return raw.replace(/\s+$/, '') + '  F' + eqStyle(b) + feed;
+    return raw;
+  }
+
+  // settings: Map(índice de bloque de arco -> { feed: 'texto', lead: mm })
+  function transform(an, settings, opts = {}) {
+    const B = an.blocks, out = [];
+    const slowOf = i => {
+      const s = settings.get(i), b = B[i];
+      if (!s || !b.arc) return null;
+      const orig = num(b.feedAfter), nf = num(String(s.feed));
+      if (nf === null || (orig !== null && orig <= nf)) return null;   // no hay reducción real: no se toca
+      return { feed: String(s.feed), lead: Math.max(0, +s.lead || 0) };
+    };
+    let curF = null;
+    const push = (text, isNew, src) => out.push({ text, isNew: !!isNew, hadN: src ? src.hasN : true });
+
+    for (const b of B) {
+      if (!b.isMove || !b.gcode) {
+        if (b.gcode && b.W && b.W.F) curF = b.W.F.v;
+        push(b.raw, false, b);
+        continue;
+      }
+      let want = b.feedAfter;
+      if (b.kind === 'rapid') { if (b.W.F) curF = b.W.F.v; push(b.raw, false, b); continue; }
+
+      const sa = (b.kind !== 'line') ? slowOf(b.i) : null;
+      if (sa) { push(setFeed(b, b.raw, sa.feed, curF), false, b); curF = sa.feed; continue; }
+
+      const lineOk = b.kind === 'line' && b.known && b.xy && !b.z && !b.compWord;
+      let lead1 = 0, lead2 = 0, f1 = null, f2 = null;
+      if (lineOk) {
+        const pm = b.prevMove, nm = b.nextMove;
+        const s1 = pm >= 0 ? slowOf(pm) : null, s2 = nm >= 0 ? slowOf(nm) : null;
+        if (s1 && same(B[pm].end, b.start)) { lead1 = s1.lead; f1 = s1.feed; }
+        if (s2 && same(B[nm].start, b.end)) { lead2 = s2.lead; f2 = s2.feed; }
+      }
+      const len = lineOk ? dist(b.start, b.end) : 0;
+      if (!(lead1 > 0 || lead2 > 0) || len < 1e-6) {
+        push(want != null ? setFeed(b, b.raw, want, curF) : b.raw, false, b);
+        if (want != null) curF = want;
+        continue;
+      }
+
+      const ux = (b.end.x - b.start.x) / len, uy = (b.end.y - b.start.y) / len;
+      const at = d => ({ x: b.start.x + ux * d, y: b.start.y + uy * d });
+      let segs;
+      if (lead1 + lead2 >= len - 1e-6) {
+        const f = (lead1 > 0 && lead2 > 0) ? (num(f1) <= num(f2) ? f1 : f2) : (lead1 > 0 ? f1 : f2);
+        segs = [{ to: b.end, feed: f }];
+      } else {
+        segs = [];
+        if (lead1 > 0) segs.push({ to: at(lead1), feed: f1 });
+        if (lead2 > 0) { segs.push({ to: at(len - lead2), feed: want }); segs.push({ to: b.end, feed: f2 }); }
+        else segs.push({ to: b.end, feed: want });
+      }
+      const eq = eqStyle(b);
+      segs.forEach((sg, k) => {
+        let text;
+        if (k === 0) {
+          text = b.raw;
+          if (segs.length > 1) {
+            if (b.W.X) text = setWord(text, 'X', fmt(sg.to.x, an.dec));
+            if (b.W.Y) text = setWord(text, 'Y', fmt(sg.to.y, an.dec));
+          }
+          text = setFeed(b, text, sg.feed, curF);
+          push(text, false, b);
+        } else {
+          const parts = ['G01'];
+          if (b.W.X) parts.push('X' + eq + fmt(sg.to.x, an.dec));
+          if (b.W.Y) parts.push('Y' + eq + fmt(sg.to.y, an.dec));
+          if (sg.feed !== curF) parts.push(' F' + eq + sg.feed);
+          push(parts.join(' '), true, b);
+        }
+        curF = sg.feed;
+      });
+    }
+
+    // Renumeración N (paso detectado, 10 por defecto)
+    const ns = B.filter(b => b.hasN).map(b => b.n);
+    if (opts.renumber !== false && ns.length) {
+      const step = ns.length > 1 && ns[1] > ns[0] ? ns[1] - ns[0] : 10;
+      let n = ns[0];
+      for (const o of out) {
+        if (!o.hadN && !o.isNew) continue;
+        o.text = /^\s*N\d+/i.test(o.text) ? o.text.replace(/^(\s*)N\d+/i, '$1N' + n) : 'N' + n + ' ' + o.text;
+        n += step;
+      }
+    }
+    const lines = out.map(o => o.text);
+    const eol = opts.eol || an.eol;
+    const text = lines.join(eol) + (an.trailing ? eol : '');
+    return { lines, text, inserted: out.filter(o => o.isNew).length };
+  }
+
+  // Segmentos con longitud y avance para dibujar y estimar tiempo de contorneado.
+  function profile(an) {
+    const segs = [];
+    for (const b of an.blocks) {
+      if (!b.isMove || b.kind === 'rapid' || !b.xy || !b.known || b.z) continue;
+      if (b.kind !== 'line' && !b.arc) continue;
+      segs.push({ b, kind: b.kind, start: b.start, end: b.end, arc: b.arc, len: b.arc ? b.arc.len : dist(b.start, b.end), feed: num(b.feedAfter) });
+    }
+    const time = segs.reduce((t, s) => t + (s.feed ? s.len / s.feed * 60 : 0), 0);
+    return { segs, time };
+  }
+
+  return { analyze, groupArcs, transform, profile, num, arcPoint };
+})();
+if (typeof module !== 'undefined') module.exports = Core;
+</script>
+
+<script id="ui">
+if (typeof document !== 'undefined') (() => {
+  const $ = id => document.getElementById(id);
+  const st = { name: 'programa.cni', text: '', eol: '\r\n', an: null, groups: [], result: null };
+
+  const latin1 = buf => { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, u.subarray(i, i + 8192)); return s; };
+  const toBytes = s => { const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 255; return u; };
+
+  $('file').addEventListener('change', e => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { st.name = f.name; $('fname').textContent = f.name; st.text = latin1(r.result); $('src').value = st.text; analyze(); };
+    r.readAsArrayBuffer(f);
+  });
+  $('src').addEventListener('input', () => { st.text = $('src').value; st.name = 'programa.cni'; analyze(); });
+
+  function analyze() {
+    if (!st.text.trim()) { $('cfg').hidden = $('res').hidden = true; return; }
+    st.an = Core.analyze(st.text);
+    const maxR = parseFloat($('gmaxr').value) || 0;
+    st.groups = Core.groupArcs(st.an).map(g => ({ ...g, on: g.type === 'externo' && g.r <= maxR, feed: $('gfeed').value, lead: $('glead').value }));
+    renderGroups(); compute();
+  }
+
+  function renderGroups() {
+    const tb = $('groups'); tb.innerHTML = '';
+    st.groups.forEach((g, k) => {
+      const tr = document.createElement('tr');
+      const tag = { externo: 'ext', interno: 'int', desconocido: 'unk' }[g.type];
+      tr.innerHTML = `<td><input type="checkbox" ${g.on ? 'checked' : ''}></td>
+        <td><span class="tag ${tag}">${g.type}</span></td><td>R ${g.r.toFixed(3)}</td><td>${g.arcs.length}</td>
+        <td>${[...g.feeds].join(' / ') || '—'}</td>
+        <td><input type="number" min="1" value="${g.feed}"></td><td><input type="number" min="0" step="0.5" value="${g.lead}"></td>`;
+      const [cb, fe, le] = tr.querySelectorAll('input');
+      cb.onchange = () => { g.on = cb.checked; compute(); };
+      fe.oninput = () => { g.feed = fe.value; compute(); };
+      le.oninput = () => { g.lead = le.value; compute(); };
+      tb.appendChild(tr);
+    });
+    const w = st.an.warnings, msgs = [];
+    if (!st.groups.length) msgs.push('No se han encontrado arcos (G02/G03) con coordenadas numéricas.');
+    if (w.badArcs) msgs.push(`${w.badArcs} arco(s) con centro I/J inconsistente: se ignoran.`);
+    if (w.parametric) msgs.push(`${w.parametric} coordenada(s) paramétricas (P…) no analizables: esos bloques no se tocan.`);
+    $('warns').innerHTML = msgs.map(m => `<div class="warn">⚠ ${m}</div>`).join('');
+    $('cfg').hidden = false;
+  }
+
+  $('applyAll').onclick = () => { st.groups.forEach(g => { g.feed = $('gfeed').value; g.lead = $('glead').value; }); renderGroups(); compute(); };
+  $('gmaxr').onchange = analyze;
+  ['renum', 'eol'].forEach(id => $(id).onchange = compute);
+
+  function compute() {
+    const settings = new Map();
+    for (const g of st.groups) if (g.on) for (const a of g.arcs) settings.set(a.i, { feed: g.feed, lead: g.lead });
+    const eol = $('eol').value ? JSON.parse('"' + $('eol').value + '"') : (st.text.includes('\r\n') ? '\r\n' : '\n');
+    st.result = Core.transform(st.an, settings, { renumber: $('renum').checked, eol });
+    $('out').value = st.result.text;
+    const p0 = Core.profile(st.an), p1 = Core.profile(Core.analyze(st.result.text));
+    const changed = settings.size;
+    $('stats').innerHTML = `Arcos seleccionados: <b>${changed}</b> · bloques insertados: <b>${st.result.inserted}</b> · ` +
+      `tiempo de contorneado estimado: <b>${p0.time.toFixed(1)} s</b> → <b>${p1.time.toFixed(1)} s</b> (sin aceleraciones)`;
+    draw($('c0'), p0); draw($('c1'), p1);
+    $('res').hidden = false;
+  }
+
+  function draw(cv, prof) {
+    const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, css = getComputedStyle(document.documentElement);
+    ctx.clearRect(0, 0, W, H);
+    const pts = []; prof.segs.forEach(s => { pts.push(s.start, s.end); if (s.arc) for (let k = 1; k < 8; k++) pts.push(Core.arcPoint(s.arc, k / 8)); });
+    if (!pts.length) return;
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const sc = (W - 40) / Math.max(x1 - x0, y1 - y0, 1e-6);
+    const tx = p => [20 + (p.x - x0) * sc, H - 20 - (p.y - y0) * sc];
+    const maxF = Math.max(...prof.segs.map(s => s.feed || 0), 1);
+    ctx.lineWidth = 2; ctx.lineCap = 'round';
+    for (const s of prof.segs) {
+      ctx.strokeStyle = (s.feed && s.feed < 0.6 * maxF) ? css.getPropertyValue('--slow').trim() : css.getPropertyValue('--fast').trim();
+      ctx.beginPath();
+      ctx.moveTo(...tx(s.start));
+      if (s.arc) for (let k = 1; k <= 24; k++) ctx.lineTo(...tx(Core.arcPoint(s.arc, k / 24)));
+      else ctx.lineTo(...tx(s.end));
+      ctx.stroke();
+    }
+  }
+
+  $('dl').onclick = () => {
+    if (!st.result) return;
+    const dot = st.name.lastIndexOf('.');
+    const name = dot > 0 ? st.name.slice(0, dot) + '_vel' + st.name.slice(dot) : st.name + '_vel';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([toBytes(st.result.text)], { type: 'application/octet-stream' }));
+    a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  $('copy').onclick = () => { $('out').select(); (navigator.clipboard ? navigator.clipboard.writeText($('out').value) : Promise.resolve(document.execCommand('copy'))).then(() => { $('copy').textContent = 'Copiado'; setTimeout(() => $('copy').textContent = 'Copiar texto', 1500); }); };
+})();
+</script>
+</body>
+</html>
