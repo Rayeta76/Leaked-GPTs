@@ -39,6 +39,7 @@
   table { width:100%; border-collapse:collapse; }
   th, td { text-align:left; padding:6px 12px; border-top:1px solid var(--line); }
   th { font-size:12px; color:var(--mute); font-weight:600; }
+  td input[type=number] { width:72px; }
   .tag { font-size:12px; padding:1px 7px; border-radius:10px; border:1px solid var(--line); }
   .tag.ext { color:var(--ok); border-color:var(--ok); }
   .links { padding:6px 12px 10px; color:var(--mute); font-size:13px; border-top:1px solid var(--line); }
@@ -76,7 +77,9 @@
     <h2>2. Herramientas y radios</h2>
     <div class="row">
       <label>Velocidad en radio por defecto <input id="gfeed" type="number" min="1" value="500"> mm/min</label>
-      <label>Tramo recto antes/después <input id="glead" type="number" min="0" step="0.5" value="2"> mm</label>
+      <label>Frenar antes <input id="gin" type="number" min="0" step="0.5" value="2"> mm</label>
+      <label>Seguir lento después <input id="gout" type="number" min="0" step="0.5" value="2"> mm</label>
+      <label title="Al salir del radio, la F sube por escalones dentro del tramo 'después' en vez de saltar de golpe">Rampa de salida <input id="gramp" type="number" min="1" max="20" step="1" value="1"> escalones</label>
       <label>Radios pequeños: R ≤ <input id="gmaxr" type="number" min="0" step="1" value="30"> mm</label>
       <button class="ghost" id="applyAll">Aplicar a todos</button>
     </div>
@@ -229,7 +232,7 @@ const Core = (() => {
     if (lines.length > 1 && lines[lines.length - 1] === '') { lines.pop(); trailing = true; }
     const B = lines.map(parseBlock);
     let x = null, y = null, g = null, comp = 40, F = null, last = -1, parametric = 0, dec = 5, decSet = false;
-    let section = '', tool = null;
+    let section = '', tool = null, sawST = false;
     const descs = new Map(), toolOrder = [];
     const useTool = t => { tool = t; if (!toolOrder.includes(t)) toolOrder.push(t); };
     B.forEach((b, i) => {
@@ -237,11 +240,11 @@ const Core = (() => {
       const sec = /^\s*\[([^\]]+)\]/.exec(b.raw);
       if (sec) section = sec[1].toUpperCase();
       if (/^LAVORAZIONI/.test(section)) {
-        const d = /^\s*\d+\s*-\s*\d+\s*-\s*[^-]*-\s*(\S+)\s*-\s*(.+?)\s*$/.exec(b.raw);
+        const d = /^\s*\d+(?:\s*-\s*\d+)*\s*-\s*[^-]*?-\s*(\S+)\s*-\s*(.+?)\s*$/.exec(b.raw);
         if (d) descs.set(d[1], d[2]);
       }
       const st = /\bST\d*\s*=\s*"([^"]+)"/i.exec(b.raw);
-      if (st) useTool(st[1]);
+      if (st) { useTool(st[1]); sawST = true; }
       if (!b.gcode) { b.feedAfter = F; b.tool = tool; return; }
       const W = {};
       for (const w of b.words) {
@@ -251,7 +254,8 @@ const Core = (() => {
           if (gv <= 3) g = gv; else if (gv >= 40 && gv <= 42) comp = gv;
         } else if (!W[w.l]) W[w.l] = w;
       }
-      if (W.T) useTool('T' + W.T.v);
+      // T como herramienta solo en programas sin ST1="…" y con número entero (en Biesse T=0.329 es otro parámetro).
+      if (W.T && !sawST && /^\d+$/.test(W.T.v)) useTool('T' + W.T.v);
       b.tool = tool;
       if (W.F) F = W.F.v;
       b.W = W; b.g = g; b.compAt = comp; b.feedAfter = F;
@@ -334,7 +338,8 @@ const Core = (() => {
     return raw;
   }
 
-  // settings: Map(índice de bloque de arco -> { feed: 'texto', lead: mm })
+  // settings: Map(índice de bloque de arco -> { feed: 'texto', leadIn: mm, leadOut: mm, ramp: pasos })
+  // (lead: mm vale para antes y después). Con ramp > 1, el tramo de salida sube la F por escalones.
   function transform(an, settings, opts = {}) {
     const B = an.blocks, out = [];
     const slowOf = i => {
@@ -342,7 +347,8 @@ const Core = (() => {
       if (!s || !b.arc) return null;
       const orig = num(b.feedAfter), nf = num(String(s.feed));
       if (nf === null || (orig !== null && orig <= nf)) return null;   // no hay reducción real: no se toca
-      return { feed: String(s.feed), lead: Math.max(0, +s.lead || 0) };
+      const mm = v => Math.max(0, +v || 0);
+      return { feed: String(s.feed), leadIn: mm(s.leadIn ?? s.lead), leadOut: mm(s.leadOut ?? s.lead), ramp: Math.max(1, Math.round(+s.ramp || 1)) };
     };
     let curF = null;
     const push = (text, isNew, src) => out.push({ text, isNew: !!isNew, hadN: src ? src.hasN : true });
@@ -360,12 +366,12 @@ const Core = (() => {
       if (sa) { push(setFeed(b, b.raw, sa.feed, curF), false, b); curF = sa.feed; continue; }
 
       const lineOk = b.kind === 'line' && b.known && b.xy && !b.z && !b.compWord;
-      let lead1 = 0, lead2 = 0, f1 = null, f2 = null;
+      let lead1 = 0, lead2 = 0, f1 = null, f2 = null, ramp = 1;
       if (lineOk) {
         const pm = b.prevMove, nm = b.nextMove;
         const s1 = pm >= 0 ? slowOf(pm) : null, s2 = nm >= 0 ? slowOf(nm) : null;
-        if (s1 && same(B[pm].end, b.start)) { lead1 = s1.lead; f1 = s1.feed; }
-        if (s2 && same(B[nm].start, b.end)) { lead2 = s2.lead; f2 = s2.feed; }
+        if (s1 && same(B[pm].end, b.start)) { lead1 = s1.leadOut; f1 = s1.feed; ramp = s1.ramp; }
+        if (s2 && same(B[nm].start, b.end)) { lead2 = s2.leadIn; f2 = s2.feed; }
       }
       const len = lineOk ? dist(b.start, b.end) : 0;
       if (!(lead1 > 0 || lead2 > 0) || len < 1e-6) {
@@ -382,7 +388,10 @@ const Core = (() => {
         segs = [{ to: b.end, feed: f }];
       } else {
         segs = [];
-        if (lead1 > 0) segs.push({ to: at(lead1), feed: f1 });
+        if (lead1 > 0) {
+          const a = num(f1), z = num(want), n = (a !== null && z !== null && z > a) ? ramp : 1;
+          for (let k = 0; k < n; k++) segs.push({ to: at(lead1 * (k + 1) / n), feed: k ? String(Math.round(a + (z - a) * k / n)) : f1 });
+        }
         if (lead2 > 0) { segs.push({ to: at(len - lead2), feed: want }); segs.push({ to: b.end, feed: f2 }); }
         else segs.push({ to: b.end, feed: want });
       }
@@ -469,10 +478,11 @@ if (typeof document !== 'undefined') (() => {
     const maxR = parseFloat($('gmaxr').value) || 0;
     const reduced = new Map(st.an.tools.map(t => [t.code, t.reduced]));
     st.groups = Core.groupArcs(st.an).map(g => ({ ...g, on: !reduced.get(g.tool) && g.type === 'externo' && g.r <= maxR + 1e-9,
-                                                  feed: $('gfeed').value, lead: $('glead').value }));
+                                                  ...defaults() }));
     st.view.tool = '*'; st.view.zoom = 1; st.view.panX = st.view.panY = 0; st.sim.t = 0; stop();
     renderTools(); renderTabs(); compute();
   }
+  const defaults = () => ({ feed: $('gfeed').value, leadIn: $('gin').value, leadOut: $('gout').value, ramp: $('gramp').value });
 
   function renderTools() {
     const box = $('tools'); box.innerHTML = '';
@@ -491,7 +501,7 @@ if (typeof document !== 'undefined') (() => {
         </div>`;
       if (groups.length) {
         const tbl = document.createElement('table');
-        tbl.innerHTML = '<thead><tr><th></th><th>Tipo</th><th>Radio</th><th>Esquinas</th><th>F actual</th><th>Velocidad en radio</th><th>Tramo recto</th></tr></thead>';
+        tbl.innerHTML = '<thead><tr><th></th><th>Tipo</th><th>Radio</th><th>Esquinas</th><th>F actual</th><th>Velocidad en radio</th><th>Frenar antes</th><th>Lento después</th><th>Rampa salida</th></tr></thead>';
         const tb = document.createElement('tbody');
         for (const g of groups) {
           const nc = g.corners.size, pas = g.arcs.length / nc;
@@ -502,11 +512,15 @@ if (typeof document !== 'undefined') (() => {
             <td>${nc} ${nc === 1 ? 'esquina' : 'esquinas'}${pas > 1 ? (Number.isInteger(pas) ? ` × ${pas} pasadas` : ` (${g.arcs.length} arcos)`) : ''}</td>
             <td>${[...g.feeds].join(' / ') || '—'}</td>
             <td><input type="number" min="1" value="${esc(g.feed)}"> mm/min</td>
-            <td><input type="number" min="0" step="0.5" value="${esc(g.lead)}"> mm</td>`;
-          const [cb, fe, le] = tr.querySelectorAll('input');
+            <td><input type="number" min="0" step="0.5" value="${esc(g.leadIn)}"> mm</td>
+            <td><input type="number" min="0" step="0.5" value="${esc(g.leadOut)}"> mm</td>
+            <td><input type="number" min="1" max="20" step="1" value="${esc(g.ramp)}" style="width:60px"></td>`;
+          const [cb, fe, li, lo, rp] = tr.querySelectorAll('input');
           cb.onchange = () => { g.on = cb.checked; renderTools(); compute(); };
           fe.onchange = () => { g.feed = fe.value; compute(); };
-          le.onchange = () => { g.lead = le.value; compute(); };
+          li.onchange = () => { g.leadIn = li.value; compute(); };
+          lo.onchange = () => { g.leadOut = lo.value; compute(); };
+          rp.onchange = () => { g.ramp = rp.value; compute(); };
           tb.appendChild(tr);
         }
         tbl.appendChild(tb); div.appendChild(tbl);
@@ -530,13 +544,13 @@ if (typeof document !== 'undefined') (() => {
     $('cfg').hidden = false;
   }
 
-  $('applyAll').onclick = () => { st.groups.forEach(g => { g.feed = $('gfeed').value; g.lead = $('glead').value; }); renderTools(); compute(); };
+  $('applyAll').onclick = () => { st.groups.forEach(g => Object.assign(g, defaults())); renderTools(); compute(); };
   $('gmaxr').onchange = analyze;
   ['renum', 'eol'].forEach(id => $(id).onchange = compute);
 
   function compute() {
     const settings = new Map();
-    for (const g of st.groups) if (g.on) for (const a of g.arcs) settings.set(a.i, { feed: g.feed, lead: g.lead });
+    for (const g of st.groups) if (g.on) for (const a of g.arcs) settings.set(a.i, { feed: g.feed, leadIn: g.leadIn, leadOut: g.leadOut, ramp: g.ramp });
     const eolSel = $('eol').value;
     const eol = eolSel === 'crlf' ? '\r\n' : eolSel === 'lf' ? '\n' : (st.text.includes('\r\n') || !st.text.includes('\n') ? '\r\n' : '\n');
     st.result = Core.transform(st.an, settings, { renumber: $('renum').checked, eol });

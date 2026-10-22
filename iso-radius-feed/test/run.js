@@ -83,4 +83,23 @@ assert.strictEqual(cut(rS.text), cut(sz), 'cambió algo antes de la herramienta 
 assert(rS.inserted === 15 && /N1880 G03 X=10.00000 Y=0.00000  I=10.00000 J=10.00000  ?F=500/.test(rS.text));
 const rSn = Core.transform(anS, selS, {});
 assert(rSn.text.includes('N10 G71') && /N2280 L=PFINE/.test(rSn.text), 'renumeración');
+
+// --- Herramientas: línea de LAVORAZIONI con un solo número y palabras T= que no son herramientas
+const sz2 = sz.replace('[LAVORAZIONI01]\r\n', '[LAVORAZIONI01]\r\n 1 - Contorneo - 3620 - Fresa 6sectores D22\r\n')
+  .replace('N1870 M128', 'N1870 M128\r\nN1875 G68 T=0.329').replace('N1590 L=PCAMBIOUT', 'N1590 L=PCAMBIOUT\r\nN1595 G01 X=-75.00000 T=0.401');
+const anS2 = Core.analyze(sz2);
+assert.deepStrictEqual(anS2.tools.map(t => t.code), ['1210081', '1210084', '1210086'], 'herramientas fantasma');
+assert.deepStrictEqual(Core.groupArcs(anS2).filter(g => g.tool === '1210086').map(g => [g.corners.size, g.arcs.length]), [[4, 8]]);
+assert(/^\s*\d+(?:\s*-\s*\d+)*/.test(' 1 - Contorneo - 3620 - Fresa 6sectores D22'));
+const t3620 = Core.analyze('[LAVORAZIONI01]\n 1 - Contorneo - 3620 - Fresa 6sectores D22\n%\nN10 ST1="3620"\nN20 G01 G42 X=0 Y=10 F=850\nN30 G03 X=10 Y=0 I=10 J=10\nN40 G01 X=100 Y=0\nN50 G03 X=110 Y=10 I=100 J=10\nN60 G01 X=110 Y=100\nN70 G01 X=0 Y=100\nN80 G01 X=0 Y=10\n').tools[0];
+assert.deepStrictEqual([t3620.code, t3620.desc, t3620.dia], ['3620', 'Fresa 6sectores D22', 22]);
+
+// --- Rampa de salida: 8 mm en 4 escalones de 500 a 2500
+const rR = Core.transform(an6, new Map([...sel(an6, 500, 2)].map(([i, v]) => [i, { feed: '500', leadIn: 2, leadOut: 8, ramp: 4 }])), { eol: '\n' });
+const LR = rR.text.split('\n'), k0 = LR.findIndex(l => l.includes('G03 X=10.00000 Y=0.00000'));
+assert.deepStrictEqual(LR.slice(k0 + 1, k0 + 7).map(l => l.replace(/^N\d+ /, '')), [
+  'G01 X=12.00000 Y=0.00000', 'G01 X=14.00000 Y=0.00000  F=1000', 'G01 X=16.00000 Y=0.00000  F=1500',
+  'G01 X=18.00000 Y=0.00000  F=2000', 'G01 X=388.00000 Y=0.00000  F=2500', 'G01 X=390.00000 Y=0.00000  F=500']);
+const prR = Core.profile(Core.analyze(rR.text));
+assert(Math.abs(prR.segs.reduce((t, x) => t + x.len, 0) - tot(pr0)) < 1e-3, 'rampa cambia la geometría');
 console.log('OK');
