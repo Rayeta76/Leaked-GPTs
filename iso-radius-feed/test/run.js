@@ -6,7 +6,7 @@ const mod = { exports: {} };
 new Function('module', code)(mod);
 const Core = mod.exports;
 const read = f => fs.readFileSync(path.join(__dirname, '../samples', f), 'utf8');
-const sel = (an, feed, lead, pred = a => a.type === 'externo') => {
+const sel = (an, feed, lead, pred = a => a.type === 'externo' && a.role === 'contorno') => {
   const m = new Map(); for (const a of an.arcs) if (pred(a)) m.set(a.i, { feed: String(feed), lead }); return m;
 };
 
@@ -14,7 +14,8 @@ const sel = (an, feed, lead, pred = a => a.type === 'externo') => {
 const p6 = read('programa6_radios_pequenos.cni');
 const an6 = Core.analyze(p6);
 const g6 = Core.groupArcs(an6);
-assert.deepStrictEqual(g6.map(g => [g.type, g.r, g.arcs.length]), [['externo', 10, 8], ['interno', 75, 2]]);
+assert.deepStrictEqual(g6.map(g => [g.tool, g.type, g.r, g.arcs.length, g.corners.size]), [['1210086', 'externo', 10, 8, 4]]);
+assert.deepStrictEqual(an6.arcs.filter(a => a.role === 'enlace').map(a => [a.type, a.r]), [['entrada', 75], ['salida', 75]]);
 const r6 = Core.transform(an6, sel(an6, 500, 2), { eol: '\n' });
 const L = r6.text.split('\n');
 const i1880 = L.findIndex(l => l.includes('G03 X=10.00000 Y=0.00000'));
@@ -44,7 +45,7 @@ assert(r6.text.includes('N' + (ns[ns.length - 1] - 10) + ' G01 G40'));
 // --- Programa 4 (ya reducido): con F igual o mayor al existente es idempotente
 const p4 = read('programa4_diamantada.cni');
 const an4 = Core.analyze(p4);
-assert.deepStrictEqual(Core.groupArcs(an4).map(g => [g.type, +g.r.toFixed(1), g.arcs.length]), [['externo', 10, 4], ['externo', 10.4, 4], ['interno', 75, 2]].sort(() => 0));
+assert.deepStrictEqual(Core.groupArcs(an4).map(g => [g.type, +g.r.toFixed(1), g.arcs.length]), [['externo', 10, 4], ['externo', 10.4, 4]]);
 const same4 = Core.transform(an4, sel(an4, 500, 2), { renumber: false });
 assert.strictEqual(same4.text, p4, 'idempotencia con F=500');
 // Y con 400 baja los arcos y los tramos de 2 mm, sin tocar los rápidos
@@ -63,4 +64,23 @@ assert(anN.arcs.filter(a => a.type === 'externo').length === 8 && anN.arcs.every
 const inc = 'N10 G01 G42 X=0 Y=10 F=2000\nN20 G03 X=10 Y=0 I=10 J=0\nN30 G01 X=100 Y=0\n';
 const anI = Core.analyze(inc);
 assert(anI.arcs.length === 1 && Math.abs(anI.arcs[0].r - 10) < 1e-9);
+
+// --- Archivo real saez1.CNI: separación por herramienta, entradas/salidas y preselección automática
+const sz = read('saez1.CNI');
+const anS = Core.analyze(sz);
+assert.deepStrictEqual(anS.tools.map(t => [t.code, t.dia, t.maxF, t.reduced]),
+  [['1210081', 100, 3000, true], ['1210084', 100, 2800, true], ['1210086', 100, 2500, false]]);
+assert(/brillo/.test(anS.tools[2].desc));
+assert.deepStrictEqual(Core.groupArcs(anS).map(g => [g.tool, g.type, +g.r.toFixed(1), g.corners.size, g.arcs.length]),
+  [['1210081', 'externo', 10.8, 4, 4], ['1210084', 'externo', 10, 4, 4], ['1210084', 'externo', 10.4, 4, 4], ['1210086', 'externo', 10, 4, 8]]);
+assert(anS.arcs.filter(a => a.r > 70).every(a => a.role === 'enlace'));
+// Solo la herramienta de brillo: lo demás del archivo queda idéntico (salvo numeración)
+const selS = new Map(); anS.arcs.filter(a => a.tool === '1210086' && a.role === 'contorno').forEach(a => selS.set(a.i, { feed: '500', lead: 2 }));
+const rS = Core.transform(anS, selS, { renumber: false });
+assert.ok(rS.text.endsWith('\r\n') && rS.text.split('\r\n').length === sz.split('\r\n').length + rS.inserted);
+const cut = t => t.slice(0, t.indexOf('N1580'));
+assert.strictEqual(cut(rS.text), cut(sz), 'cambió algo antes de la herramienta 1210086');
+assert(rS.inserted === 15 && /N1880 G03 X=10.00000 Y=0.00000  I=10.00000 J=10.00000  ?F=500/.test(rS.text));
+const rSn = Core.transform(anS, selS, {});
+assert(rSn.text.includes('N10 G71') && /N2280 L=PFINE/.test(rSn.text), 'renumeración');
 console.log('OK');
