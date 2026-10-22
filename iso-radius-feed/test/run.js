@@ -102,4 +102,18 @@ assert.deepStrictEqual(LR.slice(k0 + 1, k0 + 7).map(l => l.replace(/^N\d+ /, '')
   'G01 X=18.00000 Y=0.00000  F=2000', 'G01 X=388.00000 Y=0.00000  F=2500', 'G01 X=390.00000 Y=0.00000  F=500']);
 const prR = Core.profile(Core.analyze(rR.text));
 assert(Math.abs(prR.segs.reduce((t, x) => t + x.len, 0) - tot(pr0)) < 1e-3, 'rampa cambia la geometría');
+
+// --- Nueva2.CNI (real): 4 herramientas aunque los arcos lleven "t0.329", brillo con 5 esquinas × 2 pasadas
+const nv = fs.readFileSync(path.join(__dirname, '../samples/Nueva2.CNI'), 'latin1');
+const anN2 = Core.analyze(nv);
+assert.deepStrictEqual(anN2.tools.map(t => [t.code, t.dia]), [['3620', 22], ['1210081', 100], ['1210084', 100], ['1210086', 100]]);
+const gB = Core.groupArcs(anN2).filter(g => g.tool === '1210086');
+assert.deepStrictEqual(gB.map(g => [g.type, +g.r.toFixed(1), g.corners.size, g.arcs.length]), [['externo', 10, 5, 10], ['interno', 55, 1, 2]]);
+const selB = new Map(); anN2.arcs.filter(a => a.tool === '1210086' && a.type === 'externo' && a.ang >= 30).forEach(a => selB.set(a.i, { feed: '500', leadIn: 2, leadOut: 8, ramp: 4 }));
+assert.strictEqual(selB.size, 8, 'la esquina de 17,4° no se frena');
+const rB = Core.transform(anN2, selB, { renumber: false });
+assert.strictEqual(rB.text.slice(0, rB.text.indexOf('N2010')), nv.slice(0, nv.indexOf('N2010')));
+assert(rB.text.includes('N2360 G02 X=802.52873 Y=111.03199  I=792.50606 J=56.95291 t0.401 '));
+const lenOf = a => Core.profile(a, '1210086').segs.reduce((t, x) => t + x.len, 0);
+assert(Math.abs(lenOf(anN2) - lenOf(Core.analyze(rB.text))) < 1e-3);
 console.log('OK');

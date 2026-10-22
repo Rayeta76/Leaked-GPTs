@@ -81,6 +81,7 @@
       <label>Seguir lento después <input id="gout" type="number" min="0" step="0.5" value="2"> mm</label>
       <label title="Al salir del radio, la F sube por escalones dentro del tramo 'después' en vez de saltar de golpe">Rampa de salida <input id="gramp" type="number" min="1" max="20" step="1" value="1"> escalones</label>
       <label>Radios pequeños: R ≤ <input id="gmaxr" type="number" min="0" step="1" value="30"> mm</label>
+      <label title="Las esquinas con un giro menor no se frenan (como el 'ángulo mínimo de deceleración' del CAM)">Ángulo mínimo <input id="gang" type="number" min="0" max="180" step="1" value="0"> °</label>
       <button class="ghost" id="applyAll">Aplicar a todos</button>
     </div>
     <div id="tools"></div>
@@ -292,7 +293,7 @@ const Core = (() => {
         if (area !== null && Math.abs(area) > 1e-6) { byShape = true; type = ((area > 0) === (b.kind === 'ccw')) ? 'externo' : 'interno'; }
       }
       const c = b.arc.c;
-      arcs.push({ i: b.i, line: b.i + 1, kind: b.kind, r: b.arc.r, len: b.arc.len, type, role: b.role, byShape,
+      arcs.push({ i: b.i, line: b.i + 1, kind: b.kind, r: b.arc.r, len: b.arc.len, ang: b.arc.sweep * 180 / Math.PI, type, role: b.role, byShape,
                   feed: b.feedAfter, tool: b.tool, corner: c.x.toFixed(2) + ',' + c.y.toFixed(2) });
     }
 
@@ -504,12 +505,15 @@ if (typeof document !== 'undefined') (() => {
         tbl.innerHTML = '<thead><tr><th></th><th>Tipo</th><th>Radio</th><th>Esquinas</th><th>F actual</th><th>Velocidad en radio</th><th>Frenar antes</th><th>Lento después</th><th>Rampa salida</th></tr></thead>';
         const tb = document.createElement('tbody');
         for (const g of groups) {
-          const nc = g.corners.size, pas = g.arcs.length / nc;
+          const nc = g.corners.size, pas = g.arcs.length / nc, minA = parseFloat($('gang').value) || 0;
+          const angs = [...new Set(g.arcs.map(a => Math.round(a.ang)))].sort((p, q) => p - q);
+          const skip = new Set(g.arcs.filter(a => a.ang < minA).map(a => a.corner)).size;
           const tr = document.createElement('tr');
           tr.innerHTML = `<td><input type="checkbox" ${g.on ? 'checked' : ''}></td>
             <td><span class="tag ${g.type === 'externo' ? 'ext' : ''}">${g.type}</span></td>
             <td>R ${fnum(g.r)}</td>
-            <td>${nc} ${nc === 1 ? 'esquina' : 'esquinas'}${pas > 1 ? (Number.isInteger(pas) ? ` × ${pas} pasadas` : ` (${g.arcs.length} arcos)`) : ''}</td>
+            <td>${nc} ${nc === 1 ? 'esquina' : 'esquinas'}${pas > 1 ? (Number.isInteger(pas) ? ` × ${pas} pasadas` : ` (${g.arcs.length} arcos)`) : ''}
+              <div class="meta">${angs.length > 1 ? angs[0] + '–' + angs[angs.length - 1] : angs[0]}°${skip ? ` · ${skip} sin frenar (&lt; ${minA}°)` : ''}</div></td>
             <td>${[...g.feeds].join(' / ') || '—'}</td>
             <td><input type="number" min="1" value="${esc(g.feed)}"> mm/min</td>
             <td><input type="number" min="0" step="0.5" value="${esc(g.leadIn)}"> mm</td>
@@ -546,11 +550,12 @@ if (typeof document !== 'undefined') (() => {
 
   $('applyAll').onclick = () => { st.groups.forEach(g => Object.assign(g, defaults())); renderTools(); compute(); };
   $('gmaxr').onchange = analyze;
+  $('gang').onchange = () => { renderTools(); compute(); };
   ['renum', 'eol'].forEach(id => $(id).onchange = compute);
 
   function compute() {
     const settings = new Map();
-    for (const g of st.groups) if (g.on) for (const a of g.arcs) settings.set(a.i, { feed: g.feed, leadIn: g.leadIn, leadOut: g.leadOut, ramp: g.ramp });
+    for (const g of st.groups) if (g.on) for (const a of g.arcs) if (a.ang >= (parseFloat($('gang').value) || 0)) settings.set(a.i, { feed: g.feed, leadIn: g.leadIn, leadOut: g.leadOut, ramp: g.ramp });
     const eolSel = $('eol').value;
     const eol = eolSel === 'crlf' ? '\r\n' : eolSel === 'lf' ? '\n' : (st.text.includes('\r\n') || !st.text.includes('\n') ? '\r\n' : '\n');
     st.result = Core.transform(st.an, settings, { renumber: $('renum').checked, eol });
